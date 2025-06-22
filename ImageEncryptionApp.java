@@ -1,17 +1,25 @@
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.Desktop;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
-import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
-
+import java.security.SecureRandom;
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 import javax.imageio.ImageIO;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
@@ -22,13 +30,17 @@ import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.SwingUtilities;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 public class ImageEncryptionApp {
 
+    private static final int HEADER_LENGTH = 128; // Fixed length for header message
+    private static final String HEADER_MESSAGE = "This file is encrypted. Use ImageEncryptionApp to decrypt it.";
+
     private static JLabel selectedImageLabel;
-    private static BufferedImage selectedImage;
     private static BufferedImage originalImage;
-    private static String encryptionPassword;
+    private static File originalFile; // Store the original file path
+    private static String originalExtension; // Store the original file extension
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
@@ -37,29 +49,14 @@ public class ImageEncryptionApp {
             frame.setLayout(new BorderLayout());
             frame.getContentPane().setBackground(Color.BLACK);
 
-            JPanel headingPanel = new JPanel(new FlowLayout(FlowLayout.CENTER)); // Centered
+            JPanel headingPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
             headingPanel.setBackground(Color.BLACK);
-
-            JLabel headingLabel = new JLabel("          Image Encryption!!!!        ");
+            JLabel headingLabel = new JLabel("Image Encryption");
             headingLabel.setFont(new Font("Arial", Font.BOLD, 40));
             headingLabel.setForeground(Color.WHITE);
             headingPanel.add(headingLabel);
 
-            JButton projectInfoButton = new JButton("Project Info");
-            projectInfoButton.setForeground(Color.BLACK);
-            projectInfoButton.setBackground(new Color(255, 165, 0)); 
-            projectInfoButton.setFont(new Font("Arial", Font.BOLD, 14)); 
-            projectInfoButton.addActionListener(e -> openProjectInfoPage());
-
-            Dimension buttonSize = new Dimension(120, 40);
-            projectInfoButton.setPreferredSize(buttonSize);
-
-            JPanel headerPanel = new JPanel(new BorderLayout());
-            headerPanel.setBackground(Color.BLACK);
-            headerPanel.add(projectInfoButton, BorderLayout.NORTH);
-            headerPanel.add(headingPanel, BorderLayout.CENTER);
-
-            JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10)); // Centered with some distance
+            JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 10));
             buttonPanel.setBackground(Color.BLACK);
 
             selectedImageLabel = new JLabel();
@@ -71,7 +68,7 @@ public class ImageEncryptionApp {
             JButton decryptButton = new JButton("Decrypt");
             JButton exitButton = new JButton("Exit");
 
-            Color yellowButtonColor = new Color(255, 215, 0); 
+            Color yellowButtonColor = new Color(255, 215, 0);
             browseButton.setBackground(yellowButtonColor);
             encryptButton.setBackground(yellowButtonColor);
             decryptButton.setBackground(yellowButtonColor);
@@ -83,6 +80,7 @@ public class ImageEncryptionApp {
             decryptButton.setForeground(blackTextColor);
             exitButton.setForeground(blackTextColor);
 
+            Dimension buttonSize = new Dimension(120, 40);
             browseButton.setPreferredSize(buttonSize);
             encryptButton.setPreferredSize(buttonSize);
             decryptButton.setPreferredSize(buttonSize);
@@ -93,54 +91,87 @@ public class ImageEncryptionApp {
 
             browseButton.addActionListener(e -> {
                 JFileChooser fileChooser = new JFileChooser();
+                // Add file filter for image formats
+                FileNameExtensionFilter filter = new FileNameExtensionFilter(
+                    "Image Files", "jpg", "jpeg", "png");
+                fileChooser.setFileFilter(filter);
                 fileChooser.showOpenDialog(null);
                 File selectedFile = fileChooser.getSelectedFile();
                 if (selectedFile != null) {
-                    originalImage = loadImage(selectedFile);
-                    displayImage(originalImage, selectedImageLabel, frame);
-                    selectedImageLabel.setText("");
+                    originalFile = selectedFile;
+                    // Check if the file is encrypted
+                    if (isEncryptedFile(selectedFile)) {
+                        originalImage = null;
+                        selectedImageLabel.setIcon(null);
+                        selectedImageLabel.setText("Encrypted file selected: " + selectedFile.getName());
+                        // Extract extension (remove .jpg, .png, etc.)
+                        String fileName = selectedFile.getName();
+                        originalExtension = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
+                    } else {
+                        originalImage = loadImage(selectedFile);
+                        if (originalImage != null) {
+                            displayImage(originalImage, selectedImageLabel, frame);
+                            selectedImageLabel.setText("");
+                            // Store the file extension
+                            String fileName = selectedFile.getName();
+                            originalExtension = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
+                        }
+                    }
                 }
             });
 
             encryptButton.addActionListener(e -> {
                 if (isPasswordEntered(passwordField)) {
-                    if (originalImage != null) {
-                        BufferedImage whiteImage = createWhiteImage(originalImage.getWidth(), originalImage.getHeight());
-                        displayImage(whiteImage, selectedImageLabel, frame);
-                        selectedImage = whiteImage;
-                        encryptionPassword = new String(passwordField.getPassword());
-                        passwordField.setText("");
-
-                        // Save the encrypted image to the same file
-                        saveImage(selectedImage, new File("image.jpg"));
+                    if (originalImage != null && originalFile != null) {
+                        try {
+                            String password = new String(passwordField.getPassword());
+                            byte[] encryptedData = encryptImage(originalImage, password);
+                            // Overwrite the original file with encrypted data
+                            saveEncryptedImage(encryptedData, originalFile);
+                            // Clear the image preview
+                            selectedImageLabel.setIcon(null);
+                            selectedImageLabel.setText("");
+                            JOptionPane.showMessageDialog(null, "Image encrypted successfully and overwritten as " + originalFile.getName() + ". Original image is no longer accessible.");
+                            passwordField.setText("");
+                            originalImage = null; // Clear original image from memory
+                        } catch (Exception ex) {
+                            JOptionPane.showMessageDialog(null, "Encryption failed: " + ex.getMessage());
+                        }
+                    } else {
+                        JOptionPane.showMessageDialog(null, "Please select a valid image first");
                     }
                 } else {
-                    showPasswordPrompt("Please enter the password");
+                    JOptionPane.showMessageDialog(null, "Please enter a password");
                 }
             });
 
             decryptButton.addActionListener(e -> {
                 if (isPasswordEntered(passwordField)) {
-                    if (selectedImage != null) {
-                        String enteredPassword = new String(passwordField.getPassword());
-                        if (enteredPassword.equals(encryptionPassword)) {
-                            displayImage(originalImage, selectedImageLabel, frame);
-
-                            // Save the decrypted image to the same file
-                            saveImage(originalImage, new File("image.jpg"));
-                        } else {
-                            showPasswordPrompt("Please enter the correct password");
+                    if (originalFile != null && originalFile.exists()) {
+                        try {
+                            String password = new String(passwordField.getPassword());
+                            byte[] encryptedData = readEncryptedFile(originalFile);
+                            BufferedImage decryptedImage = decryptImage(encryptedData, password);
+                            displayImage(decryptedImage, selectedImageLabel, frame);
+                            // Overwrite the file with decrypted image
+                            saveImage(decryptedImage, originalFile, originalExtension);
+                            JOptionPane.showMessageDialog(null, "Image decrypted and saved as " + originalFile.getName());
+                            passwordField.setText("");
+                            originalImage = decryptedImage;
+                        } catch (Exception ex) {
+                            JOptionPane.showMessageDialog(null, "Decryption failed: " + ex.getMessage());
                         }
-                        passwordField.setText("");
+                    } else {
+                        JOptionPane.showMessageDialog(null, "No file selected. Please select an encrypted file");
                     }
                 } else {
-                    showPasswordPrompt("Please enter the password");
+                    JOptionPane.showMessageDialog(null, "Please enter a password");
                 }
             });
 
             exitButton.addActionListener(e -> System.exit(0));
 
-            frame.add(headerPanel, BorderLayout.NORTH);
+            frame.add(headingPanel, BorderLayout.NORTH);
             frame.add(selectedImageLabel, BorderLayout.CENTER);
             buttonPanel.add(browseButton);
             buttonPanel.add(encryptButton);
@@ -155,20 +186,29 @@ public class ImageEncryptionApp {
         });
     }
 
-    private static void openProjectInfoPage() {
-        try {
-            File indexHtmlFile = new File("index.html");
-            Desktop.getDesktop().browse(indexHtmlFile.toURI());
-        } catch (Exception ex) {
-            ex.printStackTrace();
+    private static boolean isEncryptedFile(File file) {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] header = new byte[HEADER_LENGTH];
+            int bytesRead = fis.read(header);
+            if (bytesRead != HEADER_LENGTH) {
+                return false;
+            }
+            String headerStr = new String(header, "ASCII").trim();
+            return headerStr.startsWith(HEADER_MESSAGE);
+        } catch (IOException e) {
+            return false;
         }
     }
 
     private static BufferedImage loadImage(File file) {
         try {
-            return ImageIO.read(file);
+            BufferedImage image = ImageIO.read(file);
+            if (image == null) {
+                throw new IOException("Unsupported image format");
+            }
+            return image;
         } catch (IOException e) {
-            e.printStackTrace();
+            JOptionPane.showMessageDialog(null, "Failed to load image: " + e.getMessage());
             return null;
         }
     }
@@ -212,24 +252,115 @@ public class ImageEncryptionApp {
         return enteredPassword != null && !enteredPassword.trim().isEmpty() && !enteredPassword.equals("Enter Password");
     }
 
-    private static void showPasswordPrompt(String message) {
-        JOptionPane.showMessageDialog(null, message);
+    private static byte[] encryptImage(BufferedImage image, String password) throws Exception {
+        // Convert image to byte array
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        ImageIO.write(image, "png", baos); // Use PNG as intermediate format
+        byte[] imageBytes = baos.toByteArray();
+
+        // Generate AES key from password using PBKDF2
+        byte[] salt = new byte[16];
+        new SecureRandom().nextBytes(salt);
+        SecretKey secretKey = deriveKeyFromPassword(password, salt);
+
+        // Initialize AES cipher in encryption mode
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        SecureRandom random = new SecureRandom();
+        byte[] iv = new byte[16];
+        random.nextBytes(iv);
+        IvParameterSpec ivSpec = new IvParameterSpec(iv);
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, ivSpec);
+
+        // Encrypt the image bytes
+        byte[] encryptedBytes = cipher.doFinal(imageBytes);
+
+        // Create header
+        byte[] headerBytes = new byte[HEADER_LENGTH];
+        byte[] messageBytes = HEADER_MESSAGE.getBytes("ASCII");
+        System.arraycopy(messageBytes, 0, headerBytes, 0, Math.min(messageBytes.length, HEADER_LENGTH));
+        // Pad remaining header with spaces
+        for (int i = messageBytes.length; i < HEADER_LENGTH; i++) {
+            headerBytes[i] = ' ';
+        }
+
+        // Combine header, IV, salt, and encrypted data
+        byte[] result = new byte[headerBytes.length + iv.length + salt.length + encryptedBytes.length];
+        System.arraycopy(headerBytes, 0, result, 0, headerBytes.length);
+        System.arraycopy(iv, 0, result, headerBytes.length, iv.length);
+        System.arraycopy(salt, 0, result, headerBytes.length + iv.length, salt.length);
+        System.arraycopy(encryptedBytes, 0, result, headerBytes.length + iv.length + salt.length, encryptedBytes.length);
+
+        return result;
     }
 
-    private static BufferedImage createWhiteImage(int width, int height) {
-        BufferedImage whiteImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
-        Graphics2D g2d = whiteImage.createGraphics();
-        g2d.setColor(Color.WHITE);
-        g2d.fillRect(0, 0, width, height);
-        g2d.dispose();
-        return whiteImage;
+    private static BufferedImage decryptImage(byte[] encryptedData, String password) throws Exception {
+        // Check if encrypted data is long enough
+        if (encryptedData.length < HEADER_LENGTH + 32) {
+            throw new Exception("Invalid encrypted file format");
+        }
+
+        // Skip header (first 128 bytes)
+        byte[] iv = new byte[16];
+        byte[] salt = new byte[16];
+        byte[] encryptedBytes = new byte[encryptedData.length - HEADER_LENGTH - 16 - 16];
+        System.arraycopy(encryptedData, HEADER_LENGTH, iv, 0, 16);
+        System.arraycopy(encryptedData, HEADER_LENGTH + 16, salt, 0, 16);
+        System.arraycopy(encryptedData, HEADER_LENGTH + 32, encryptedBytes, 0, encryptedBytes.length);
+
+        // Generate AES key from password and salt using PBKDF2
+        SecretKey secretKey = deriveKeyFromPassword(password, salt);
+
+        // Initialize AES cipher in decryption mode
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        IvParameterSpec ivSpec = new IvParameterSpec(iv);
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec);
+
+        // Decrypt the image bytes
+        byte[] decryptedBytes = cipher.doFinal(encryptedBytes);
+
+        // Convert decrypted bytes back to BufferedImage
+        ByteArrayInputStream bais = new ByteArrayInputStream(decryptedBytes);
+        BufferedImage image = ImageIO.read(bais);
+        if (image == null) {
+            throw new Exception("Failed to decode decrypted image");
+        }
+        return image;
     }
 
-    private static void saveImage(BufferedImage image, File outputFile) {
-        try {
-            ImageIO.write(image, "png", outputFile);
+    private static SecretKey deriveKeyFromPassword(String password, byte[] salt) throws Exception {
+        // Use PBKDF2 to derive a 256-bit AES key from the password
+        char[] passwordChars = password.toCharArray();
+        PBEKeySpec spec = new PBEKeySpec(passwordChars, salt, 10000, 256); // 10,000 iterations
+        SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        byte[] keyBytes = skf.generateSecret(spec).getEncoded();
+        return new SecretKeySpec(keyBytes, "AES");
+    }
+
+    private static void saveEncryptedImage(byte[] encryptedData, File outputFile) {
+        try (FileOutputStream fos = new FileOutputStream(outputFile)) {
+            fos.write(encryptedData);
         } catch (IOException e) {
-            e.printStackTrace();
+            JOptionPane.showMessageDialog(null, "Failed to save encrypted image: " + e.getMessage());
+        }
+    }
+
+    private static byte[] readEncryptedFile(File file) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                baos.write(buffer, 0, bytesRead);
+            }
+            return baos.toByteArray();
+        }
+    }
+
+    private static void saveImage(BufferedImage image, File outputFile, String format) {
+        try {
+            ImageIO.write(image, format, outputFile);
+        } catch (IOException e) {
+            JOptionPane.showMessageDialog(null, "Failed to save image: " + e.getMessage());
         }
     }
 }
